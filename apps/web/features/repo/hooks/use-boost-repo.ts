@@ -10,14 +10,17 @@ export function useBoostRepository(repositoryId: string) {
   return useMutation({
     mutationFn: async () => {
       const response = await boostRepositoryAction(repositoryId);
+
       if (!response.success) {
         throw new Error(response.error.message);
       }
+
       return response.data;
     },
     onSuccess: (data) => {
       queryClient.setQueryData(repoKeys.detail(repositoryId), (oldData) => {
         if (!oldData) return oldData;
+
         return {
           ...oldData,
           latestJobId: data.jobId,

@@ -1,4 +1,4 @@
-import { wipeAllQueues } from "@repo/shared/server";
+// import { wipeAllQueues } from "@repo/shared/server";
 import { initializeDistributedQueue } from "./ai/queue.js";
 
 async function bootstrap() {
@@ -10,7 +10,10 @@ async function bootstrap() {
 }
 
 void bootstrap();
+
 // await wipeAllQueues();
 export * from "./workers/ingestion.worker.js";
+
 export * from "./workers/module.worker.js";
+
 export * from "./workers/summarization.worker.js";

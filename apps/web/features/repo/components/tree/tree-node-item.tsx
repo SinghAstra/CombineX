@@ -24,10 +24,12 @@ export function TreeNodeItem({
   onToggleFolder,
 }: TreeNodeItemProps) {
   const isFolder = node.type === "folder";
+
   const isFolderOpen = expandedFolders.has(node.relativePath);
 
   const handleClick = (e: React.MouseEvent): void => {
     e.stopPropagation();
+
     if (isFolder) {
       onToggleFolder(node.relativePath);
     }

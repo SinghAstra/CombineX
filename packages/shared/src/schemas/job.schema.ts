@@ -19,7 +19,6 @@ export const jobStatusSchema = z.enum([
 export const repoIngestionJobDataSchema = z.object({
   jobId: z.uuid(),
   repositoryId: z.string().uuid(),
-  isResync: z.boolean(),
 });
 
 export const fileSummarizationJobDataSchema = z.object({
@@ -35,10 +34,13 @@ export const moduleGenerationJobDataSchema = z.object({
 });
 
 export type JobStatus = z.infer<typeof jobStatusSchema>;
+
 export type RepoIngestionJobData = z.infer<typeof repoIngestionJobDataSchema>;
+
 export type FileSummarizationJobData = z.infer<
   typeof fileSummarizationJobDataSchema
 >;
+
 export type ModuleGenerationJobData = z.infer<
   typeof moduleGenerationJobDataSchema
 >;

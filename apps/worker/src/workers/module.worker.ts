@@ -1,18 +1,20 @@
-import { prisma } from "@repo/db";
-import { logError, QUEUE_NAMES, ModuleGenerationJobData } from "@repo/shared";
+import { logError, QUEUE_NAMES } from "@repo/shared";
 import { redisConnection } from "@repo/shared/server";
 import { Worker, type Job } from "bullmq";
-import { moduleService } from "../services/module.service";
+import { clusterer } from "../services/clustering/clusterer";
 
-export const moduleGenerationWorker = new Worker<ModuleGenerationJobData>(
+export const moduleGenerationWorker = new Worker(
   QUEUE_NAMES.MODULE_GENERATION,
-  async (job: Job<ModuleGenerationJobData>) => {
-    const { jobId, repositoryId } = job.data;
-    await moduleService.processModuleGeneration(repositoryId, jobId);
+  async (job: Job) => {
+    const { repositoryId, jobId } = job.data;
+
+    console.log(`[Worker] Starting Module Generation Job...`);
+
+    await clusterer.processModuleGeneration(repositoryId, jobId);
   },
   {
     connection: redisConnection,
-    concurrency: 4,
+    concurrency: 5,
   }
 );
 
@@ -23,10 +25,13 @@ moduleGenerationWorker.on("failed", (job, error) => {
 moduleGenerationWorker.on("ready", () =>
   console.log("moduleGenerationWorker ready")
 );
+
 moduleGenerationWorker.on("active", (job) =>
-  console.log("moduleGenerationWorker active", job?.id)
+  console.log("moduleGenerationWorker active", job.id)
 );
+
 moduleGenerationWorker.on("error", (err) => {
   console.log("moduleGenerationWorker error");
+
   logError(err);
 });

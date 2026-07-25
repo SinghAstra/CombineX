@@ -15,7 +15,9 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
 
   const copyToClipboard = (code: string) => {
     navigator.clipboard.writeText(code);
+
     setCopiedCode(code);
+
     setTimeout(() => setCopiedCode(null), 2000);
   };
 
@@ -81,6 +83,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
 
           code: ({ children, className }) => {
             const isInline = !className;
+
             if (isInline) {
               return (
                 <code className="bg-muted text-foreground rounded px-1.5 py-0.5 text-[0.85em] font-mono">
@@ -88,6 +91,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
                 </code>
               );
             }
+
             return <code className={className}>{children}</code>;
           },
 
@@ -98,12 +102,16 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
                   children?: React.ReactNode;
                 }>)
               : null;
+
             const className = codeElement?.props?.className ?? "";
+
             const language = /language-(\w+)/.exec(className)?.[1] ?? "text";
+
             const rawText = String(codeElement?.props?.children ?? "").replace(
               /\n$/,
               ""
             );
+
             const isCopied = copiedCode === rawText;
 
             return (

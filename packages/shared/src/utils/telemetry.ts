@@ -25,6 +25,7 @@ export async function trackProgress({
   console.log("log is ", log);
 
   const channelCoordinate = getJobTelemetryChannel(jobId);
+
   const eventPayload: TelemetryEvent = {
     repositoryId,
     status,

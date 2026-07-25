@@ -19,11 +19,11 @@
     "build": "prisma generate && tsup src/index.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.3",
-    "tsup": "^8.5.1"
+    "@prisma/client": "^6.19.3"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
-    "prisma": "6"
+    "prisma": "6",
+    "tsup": "^8.5.1"
   }
 }

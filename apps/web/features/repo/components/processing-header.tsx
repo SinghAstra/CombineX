@@ -27,13 +27,17 @@ import { z } from "zod";
 
 export function ProcessingHeader() {
   const { toggleSidebar } = useSidebar();
+
   const { data: session } = useSession();
+
   const params = useParams();
 
   const repoIdValidation = z.string().safeParse(params?.id);
+
   const repositoryId = repoIdValidation.success ? repoIdValidation.data : null;
 
   const { data: repository } = useRepository(repositoryId ?? "");
+
   const isRepoView = !!repositoryId && !!repository;
 
   const { mutateAsync: boostRepo, isPending: isBoosting } = useBoostRepository(
@@ -53,6 +57,7 @@ export function ProcessingHeader() {
 
   const getUserInitials = () => {
     if (!session?.user?.name) return null;
+
     return session.user.name
       .split(" ")
       .map((word) => word[0])

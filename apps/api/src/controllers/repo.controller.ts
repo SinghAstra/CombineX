@@ -26,7 +26,7 @@ export const repositoryController = {
         githubUrl: validatedInput.githubUrl,
       });
 
-      console.log("responseData is ",responseData)
+      console.log("responseData is ", responseData);
 
       res.status(201).json(successResponse(responseData));
     } catch (error) {
@@ -83,11 +83,11 @@ export const repositoryController = {
           "Please sign in to continue."
         );
       }
+
       const userId = req.user.id;
 
-      const repositories = await repositoryService.getRepositoriesByUserId(
-        userId
-      );
+      const repositories =
+        await repositoryService.getRepositoriesByUserId(userId);
 
       res.status(200).json(successResponse(repositories));
     } catch (error) {
@@ -168,6 +168,7 @@ export const repositoryController = {
       }
 
       const { ids } = deleteMultipleReposInputSchema.parse(req.body);
+
       const result = await repositoryService.deleteMultipleRepositories(
         ids,
         req.user.id

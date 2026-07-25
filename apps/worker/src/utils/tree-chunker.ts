@@ -32,10 +32,12 @@ export function buildVirtualTree(files: FileNode[]): TreeNode {
 
   for (const file of files) {
     const pathSegments = file.path.split("/");
+
     let currentNode = rootNode;
 
     for (let i = 0; i < pathSegments.length; i++) {
       const segment = pathSegments[i];
+
       const isFile = i === pathSegments.length - 1;
 
       if (!currentNode.children.has(segment)) {
@@ -72,6 +74,7 @@ export function chunkTreeIntoBuckets(
   options: ChunkOptions
 ): Bucket[] {
   const rootNode = buildVirtualTree(files);
+
   const finalBuckets: Bucket[] = [];
 
   function traverse(node: TreeNode): TraverseResult {
@@ -90,11 +93,14 @@ export function chunkTreeIntoBuckets(
     }
 
     const unBucketedFiles: FileNode[] = [];
+
     let unBucketedTokens = 0;
 
     for (const childNode of node.children.values()) {
       const result = traverse(childNode);
+
       unBucketedFiles.push(...result.unBucketedFiles);
+
       unBucketedTokens += result.unBucketedTokens;
     }
 
@@ -111,16 +117,19 @@ export function chunkTreeIntoBuckets(
         tokenCount: unBucketedTokens,
         files: unBucketedFiles,
       });
+
       return {
         unBucketedFiles: [],
         unBucketedTokens: 0,
       };
     } else {
       let currentChunkFiles: FileNode[] = [];
+
       let currentChunkTokens = 0;
+
       let partNumber = 1;
 
-      for (let file of unBucketedFiles) {
+      for (const file of unBucketedFiles) {
         if (currentChunkTokens + file.tokens > options.maxTokens) {
           const displayPath = node.path === "" ? "Root Directory" : node.path;
 
@@ -131,12 +140,17 @@ export function chunkTreeIntoBuckets(
           });
 
           currentChunkFiles = [];
+
           currentChunkTokens = 0;
+
           partNumber++;
         }
+
         currentChunkFiles.push(file);
+
         currentChunkTokens = currentChunkTokens + file.tokens;
       }
+
       return {
         unBucketedFiles: currentChunkFiles,
         unBucketedTokens: currentChunkTokens,

@@ -32,8 +32,10 @@ export function RepositoryWorkspace({ repo }: RepositoryWorkspaceProps) {
   const handleToggleFolder = useCallback((path: string) => {
     setExpandedFolders((prev) => {
       const next = new Set(prev);
+
       if (next.has(path)) next.delete(path);
       else next.add(path);
+
       return next;
     });
   }, []);
@@ -50,16 +52,20 @@ export function RepositoryWorkspace({ repo }: RepositoryWorkspaceProps) {
     if (treeNodes.length === 0) return;
 
     const compiledText = compileProjectSummaryText(treeNodes);
+
     if (!compiledText) {
       toast.error("Architecture map is not ready yet.");
+
       return;
     }
 
     try {
       await navigator.clipboard.writeText(compiledText);
+
       toast.success("Copied full architecture map to clipboard!");
     } catch (error) {
       logError(error);
+
       toast.error("Failed to copy map to clipboard.");
     }
   };
