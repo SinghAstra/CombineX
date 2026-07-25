@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { prisma } from "@repo/db";
 import {
   COMMON_ERROR_CODES,
@@ -11,13 +12,7 @@ import {
   REPOSITORY_STATUS,
   RepositoryTreeNode,
 } from "@repo/shared";
-import {
-  fileSummarizationQueue,
-  repositoryIngestionQueue,
-  trackProgress,
-} from "@repo/shared/server";
-import crypto from "node:crypto";
-import fs from "node:fs/promises";
+import { repositoryIngestionQueue, trackProgress } from "@repo/shared/server";
 import { BadRequestError, NotFoundError } from "../errors/api-errors.js";
 import { buildRepositoryTree } from "../lib/build-tree.js";
 
@@ -26,93 +21,113 @@ interface IngestParams {
   readonly githubUrl: string;
 }
 
+const chunkArray = <T>(array: T[], size: number): T[][] => {
+  return Array.from({ length: Math.ceil(array.length / size) }, (_, i) =>
+    array.slice(i * size, i * size + size),
+  );
+};
+
 export const repositoryService = {
   async createRepository(params: IngestParams) {
-    const { userId, githubUrl } = params;
+    const { userId, githubUrl: rawGithubUrl } = params;
+
     let owner: string;
     let name: string;
+    let normalizedGithubUrl: string;
 
     try {
-      const parsed = parseGitHubUrl(githubUrl);
-      owner = parsed.owner;
-      name = parsed.name;
+      const parsed = parseGitHubUrl(rawGithubUrl);
+      owner = parsed.owner.toLowerCase();
+      name = parsed.name.toLowerCase();
+      normalizedGithubUrl = `https://github.com/${owner}/${name}`;
     } catch {
       throw new BadRequestError(
         COMMON_ERROR_CODES.SCHEMA_MISMATCH,
-        "Invalid GitHub URL format."
+        "Invalid GitHub URL format.",
       );
     }
+
+    console.log(
+      `⚙️ [Repository Service DB] Checking duplicate repo for user ${userId}...`,
+    );
 
     const existingRepo = await prisma.repository.findFirst({
       where: {
         userId,
-        githubUrl,
+        githubUrl: normalizedGithubUrl,
       },
     });
 
-    console.log("existingRepo is ", existingRepo);
-
     if (existingRepo) {
+      console.log(
+        `ℹ️ [Repository Service] Found existing repository: ${existingRepo.id}`,
+      );
       return { repositoryId: existingRepo.id, isDuplicate: true };
     }
 
     try {
-      const pingResponse = await fetch(githubUrl, {
+      const pingResponse = await fetch(normalizedGithubUrl, {
         method: "HEAD",
         redirect: "follow",
       });
+
       if (!pingResponse.ok) throw new Error();
     } catch {
       throw new BadRequestError(
         REPO_ERROR_CODES.REPOSITORY_UNREACHABLE,
-        "Repository unreachable or private."
+        "Repository unreachable or private.",
       );
     }
 
     const repositoryId = crypto.randomUUID();
     const repositoryAvatarUrl = `https://github.com/${owner}.png`;
 
-    try {
-      const newRepo = await prisma.repository.create({
-        data: {
-          id: repositoryId,
-          userId,
-          githubUrl,
-          name,
-          owner,
-          avatar: repositoryAvatarUrl,
-          status: REPOSITORY_STATUS.PENDING,
-          totalSize: BigInt(0),
-        },
-      });
+    console.log(
+      `⚙️ [Repository Service DB] Creating repository record ${repositoryId}...`,
+    );
 
-      console.log("newRepo is ", newRepo);
+    const newRepo = await prisma.repository.create({
+      data: {
+        id: repositoryId,
+        userId,
+        githubUrl: normalizedGithubUrl,
+        name,
+        owner,
+        avatar: repositoryAvatarUrl,
+        status: REPOSITORY_STATUS.PENDING,
+        totalSize: BigInt(0),
+      },
+    });
 
-      const job = await prisma.job.create({
-        data: {
-          repositoryId: newRepo.id,
-          status: JOB_STATUS.PENDING,
-        },
-      });
+    console.log(`⚙️ [Repository Service DB] Creating initial job record...`);
 
-      console.log("job is ", job);
-
-      await repositoryIngestionQueue.add(JOB_NAMES.ANALYZE_REPO, {
-        jobId: job.id,
+    const job = await prisma.job.create({
+      data: {
         repositoryId: newRepo.id,
-        isResync: false,
-      });
+        status: JOB_STATUS.PENDING,
+      },
+    });
 
-      return { repositoryId: newRepo.id, isDuplicate: false };
-    } catch (error: any) {
-      throw error;
-    }
+    await repositoryIngestionQueue.add(JOB_NAMES.ANALYZE_REPO, {
+      jobId: job.id,
+      repositoryId: newRepo.id,
+    });
+
+    console.log(
+      `✅ [Repository Service] Enqueued repo analysis job: ${job.id}`,
+    );
+
+    return { repositoryId: newRepo.id, isDuplicate: false };
   },
 
   async getRepositoryFiles(
     id: string,
-    userId: string
+    userId: string,
   ): Promise<RepositoryTreeNode[]> {
+    console.log(
+      `⚙️ [Repository Service DB] Validating access for repo ${id}...`,
+    );
+
     const repo = await prisma.repository.findFirst({
       where: { id, userId },
     });
@@ -120,26 +135,56 @@ export const repositoryService = {
     if (!repo) {
       throw new NotFoundError(
         COMMON_ERROR_CODES.ROUTE_NOT_FOUND,
-        "Repository not found."
+        "Repository not found.",
       );
     }
+
+    console.log(`⚙️ [Repository Service DB] Fetching files for repo ${id}...`);
 
     const flatFiles = await prisma.repositoryFile.findMany({
       where: { repositoryId: id },
       orderBy: { relativePath: "asc" },
     });
 
+    console.log(
+      `⚙️ [Repository Service DB] Fetching module summaries for repo ${id}...`,
+    );
+
     const moduleSummaries = await prisma.moduleSummary.findMany({
       where: { repositoryId: id },
     });
+
+    const incompleteFiles = flatFiles.filter(
+      (file) => file.summaryStatus !== FILE_SUMMARY_STATUS.COMPLETED,
+    );
+
+    if (incompleteFiles.length > 0) {
+      console.log(
+        `⚙️ [DB-Explorer Debug] ${incompleteFiles.length} incomplete files remaining for repo ${id}. Sample:`,
+      );
+
+      incompleteFiles.slice(0, 5).forEach((file) => {
+        console.log(
+          `  ↳ 📄 Path: ${file.relativePath} | Status: [${file.summaryStatus}]`,
+        );
+      });
+    } else {
+      console.log(
+        `⚙️ [DB-Explorer Debug] All file summaries for repository ${id} are completed.`,
+      );
+    }
 
     return buildRepositoryTree(flatFiles, moduleSummaries);
   },
 
   async getRepositoryDetail(
     id: string,
-    userId: string
+    userId: string,
   ): Promise<GetRepositoryResponse> {
+    console.log(
+      `⚙️ [Repository Service DB] Fetching details for repo ${id}...`,
+    );
+
     const repo = await prisma.repository.findFirst({
       where: { id, userId },
       include: {
@@ -161,7 +206,7 @@ export const repositoryService = {
     if (!repo) {
       throw new NotFoundError(
         COMMON_ERROR_CODES.ROUTE_NOT_FOUND,
-        "Repository not found or access denied."
+        "Repository not found or access denied.",
       );
     }
 
@@ -191,8 +236,12 @@ export const repositoryService = {
   },
 
   async getRepositoriesByUserId(
-    userId: string
+    userId: string,
   ): Promise<GetRepositoriesResponse> {
+    console.log(
+      `⚙️ [Repository Service DB] Fetching all repos for user ${userId}...`,
+    );
+
     const records = await prisma.repository.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
@@ -220,41 +269,12 @@ export const repositoryService = {
 
   async resyncRepository(
     id: string,
-    userId: string
+    userId: string,
   ): Promise<{ jobId: string }> {
-    const repo = await prisma.repository.findFirst({
-      where: { id, userId },
-    });
+    console.log(
+      `⚙️ [Repository Service DB] Validating access for repo ${id}...`,
+    );
 
-    if (!repo) {
-      throw new NotFoundError(
-        COMMON_ERROR_CODES.ROUTE_NOT_FOUND,
-        "Repository not found."
-      );
-    }
-
-    const job = await prisma.job.create({
-      data: {
-        repositoryId: id,
-        status: JOB_STATUS.PENDING,
-      },
-    });
-
-    await prisma.repository.update({
-      where: { id },
-      data: { status: REPOSITORY_STATUS.PROCESSING },
-    });
-
-    await repositoryIngestionQueue.add(JOB_NAMES.ANALYZE_REPO, {
-      jobId: job.id,
-      repositoryId: id,
-      isResync: true,
-    });
-
-    return { jobId: job.id };
-  },
-
-  async boostRepository(id: string, userId: string) {
     const repo = await prisma.repository.findFirst({
       where: { id, userId },
       include: {
@@ -268,22 +288,102 @@ export const repositoryService = {
     if (!repo) {
       throw new NotFoundError(
         COMMON_ERROR_CODES.ROUTE_NOT_FOUND,
-        "Repository not found."
+        "Repository not found.",
       );
     }
 
     const latestJob = repo.jobs[0] ?? null;
 
-    const incompleteFiles = await prisma.repositoryFile.findMany({
-      where: {
+    if (latestJob && latestJob.status === JOB_STATUS.RUNNING) {
+      console.log(
+        `⚙️ [Repository Service DB] Cancelling stale running job ${latestJob.id}...`,
+      );
+
+      await prisma.job.update({
+        where: { id: latestJob.id },
+        data: { status: JOB_STATUS.CANCELLED, cancelledAt: new Date() },
+      });
+    }
+
+    console.log(`⚙️ [Repository Service DB] Creating new resync job...`);
+
+    const newJob = await prisma.job.create({
+      data: {
         repositoryId: id,
-        summaryStatus: {
-          not: FILE_SUMMARY_STATUS.COMPLETED,
+        status: JOB_STATUS.RUNNING,
+      },
+    });
+
+    console.log(
+      `⚙️ [Repository Service DB] Updating repo ${id} status to PROCESSING...`,
+    );
+
+    await prisma.repository.update({
+      where: { id },
+      data: { status: REPOSITORY_STATUS.PROCESSING },
+    });
+
+    await repositoryIngestionQueue.add(JOB_NAMES.ANALYZE_REPO, {
+      jobId: newJob.id,
+      repositoryId: id,
+    });
+
+    console.log(`✅ [Repository Service] Resync job queued: ${newJob.id}`);
+
+    return { jobId: newJob.id };
+  },
+
+  async boostRepository(id: string, userId: string) {
+    console.log(
+      `⚙️ [Repository Service DB] Fetching repository and latest job for boost...`,
+    );
+
+    const repo = await prisma.repository.findFirst({
+      where: { id, userId },
+      include: {
+        jobs: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
         },
       },
     });
 
-    if (incompleteFiles.length === 0) {
+    if (!repo) {
+      throw new NotFoundError(
+        COMMON_ERROR_CODES.ROUTE_NOT_FOUND,
+        "Repository not found.",
+      );
+    }
+
+    const latestJob = repo.jobs[0] ?? null;
+
+    if (latestJob && latestJob.status === JOB_STATUS.RUNNING) {
+      console.log(
+        `⚙️ [Repository Service DB] Cancelling stale running job ${latestJob.id}...`,
+      );
+
+      await prisma.job.update({
+        where: { id: latestJob.id },
+        data: { status: JOB_STATUS.CANCELLED, cancelledAt: new Date() },
+      });
+    }
+
+    console.log(
+      `⚙️ [Repository Service DB] Counting incomplete files for repo ${id}...`,
+    );
+
+    const incompleteCount = await prisma.repositoryFile.count({
+      where: {
+        repositoryId: id,
+        summaryStatus: { not: FILE_SUMMARY_STATUS.COMPLETED },
+      },
+    });
+
+    if (incompleteCount === 0) {
+      console.log(
+        `ℹ️ [Repository Service] No incomplete files found. Marking repo as COMPLETED.`,
+      );
+
       await prisma.repository.update({
         where: { id },
         data: { status: REPOSITORY_STATUS.COMPLETED },
@@ -299,17 +399,21 @@ export const repositoryService = {
           jobId: latestJob.id,
           repositoryId: id,
           status: JOB_STATUS.COMPLETED,
-          message: "Sync complete. No changes found.",
+          message: "Boost complete. All files are already processed.",
         });
       }
 
       return { jobId: latestJob?.id || "" };
     }
 
+    console.log(
+      `⚙️ [Repository Service DB] Creating new boost job for repo ${id}...`,
+    );
+
     const newJob = await prisma.job.create({
       data: {
         repositoryId: id,
-        status: JOB_STATUS.PENDING,
+        status: JOB_STATUS.RUNNING,
       },
     });
 
@@ -320,92 +424,150 @@ export const repositoryService = {
       message: "Starting Repository Boost...",
     });
 
-    await prisma.$transaction([
-      ...(latestJob && latestJob.status === JOB_STATUS.RUNNING
-        ? [
-            prisma.job.update({
-              where: { id: latestJob.id },
-              data: { status: JOB_STATUS.CANCELLED, cancelledAt: new Date() },
-            }),
-          ]
-        : []),
-      prisma.repositoryFile.updateMany({
-        where: {
-          repositoryId: id,
-          summaryStatus: {
-            not: FILE_SUMMARY_STATUS.COMPLETED,
-          },
-        },
-        data: {
-          summaryStatus: FILE_SUMMARY_STATUS.PENDING,
-          retryCount: 0,
-          lastError: null,
-        },
-      }),
-    ]);
+    console.log(
+      `⚙️ [Repository Service DB] Resetting ${incompleteCount} incomplete files to PENDING...`,
+    );
 
-    const runId = Math.floor(Math.random() * 100000);
+    const updatedRepoFiles = await prisma.repositoryFile.updateMany({
+      where: {
+        repositoryId: id,
+        summaryStatus: { not: FILE_SUMMARY_STATUS.COMPLETED },
+      },
+      data: {
+        summaryStatus: FILE_SUMMARY_STATUS.PENDING,
+        retryCount: 0,
+        lastError: null,
+      },
+    });
 
-    await fileSummarizationQueue.addBulk(
-      incompleteFiles.map((file, idx) => ({
-        name: JOB_NAMES.SUMMARIZE_FILE,
-        data: {
-          fileId: file.id,
-          repositoryId: id,
-          jobId: newJob.id,
-          runId: runId + idx,
-        },
-      }))
+    // QUEUE INGESTION WORKER JUST LIKE RESYNC/CREATE
+    await repositoryIngestionQueue.add(JOB_NAMES.ANALYZE_REPO, {
+      jobId: newJob.id,
+      repositoryId: id,
+    });
+
+    await trackProgress({
+      jobId: newJob.id,
+      repositoryId: id,
+      status: JOB_STATUS.RUNNING,
+      message: `Re-syncing workspace and queueing ${updatedRepoFiles.count} files for AI analysis...`,
+    });
+
+    console.log(
+      `✅ [Repository Service] Boost completed. Queued ${updatedRepoFiles.count} files.`,
     );
 
     return { jobId: newJob.id };
   },
 
   async deleteRepository(id: string, userId: string) {
+    console.log(
+      `⚙️ [Repository Service DB] Checking ownership for repo ${id}...`,
+    );
+
     const repo = await prisma.repository.findFirst({
       where: { id, userId },
+      select: { id: true },
     });
 
     if (!repo) {
       throw new NotFoundError(
         REPO_ERROR_CODES.REPO_NOT_FOUND,
-        "Repository not found or access denied."
+        "Repository not found or access denied.",
       );
     }
 
-    await prisma.repository.delete({
-      where: { id },
+    console.log(
+      `⚙️ [Repository Service DB] Fetching file IDs for safe removal...`,
+    );
+
+    const files = await prisma.repositoryFile.findMany({
+      where: { repositoryId: id },
+      select: { id: true },
     });
+
+    if (files.length > 0) {
+      const fileChunks = chunkArray(
+        files.map((f) => f.id),
+        500,
+      );
+
+      console.log(
+        `⚙️ [Repository Service DB] Deleting ${files.length} files in ${fileChunks.length} chunk(s)...`,
+      );
+
+      for (const chunk of fileChunks) {
+        await prisma.repositoryFile.deleteMany({
+          where: { id: { in: chunk } },
+        });
+      }
+    }
+
+    console.log(`⚙️ [Repository Service DB] Deleting parent repo ${id}...`);
+
+    await prisma.repository.delete({ where: { id } });
+
+    console.log(`✅ [Repository Service] Successfully deleted repo ${id}.`);
 
     return { message: "Repository successfully removed." };
   },
 
   async deleteMultipleRepositories(ids: string[], userId: string) {
+    console.log(
+      `⚙️ [Repository Service DB] Fetching ${ids.length} repos for deletion...`,
+    );
+
     const repos = await prisma.repository.findMany({
       where: { id: { in: ids }, userId },
-      select: { id: true, diskPath: true },
+      select: { id: true },
     });
 
     if (repos.length === 0) {
       return { message: "No matching repositories found to remove." };
     }
 
-    await prisma.repository.deleteMany({
-      where: {
-        id: { in: repos.map((r) => r.id) },
-        userId,
-      },
+    const validRepoIds = repos.map((r) => r.id);
+
+    console.log(
+      `⚙️ [Repository Service DB] Fetching file IDs for bulk repo removal...`,
+    );
+
+    const files = await prisma.repositoryFile.findMany({
+      where: { repositoryId: { in: validRepoIds } },
+      select: { id: true },
     });
 
-    for (const repo of repos) {
-      fs.rm(repo.diskPath, { recursive: true, force: true }).catch((err) => {
-        console.error(
-          `⚠️ Failed to clear bulk disk path for repository asset ${repo.id}:`,
-          err
-        );
-      });
+    if (files.length > 0) {
+      const fileChunks = chunkArray(
+        files.map((f) => f.id),
+        500,
+      );
+
+      console.log(
+        `⚙️ [Repository Service DB] Bulk deleting ${files.length} files in ${fileChunks.length} chunk(s)...`,
+      );
+
+      for (const chunk of fileChunks) {
+        await prisma.repositoryFile.deleteMany({
+          where: { id: { in: chunk } },
+        });
+      }
     }
 
-    return { message: `${repos.length} repositories successfully removed.` };
+    console.log(
+      `⚙️ [Repository Service DB] Deleting ${validRepoIds.length} parent repo records...`,
+    );
+
+    await prisma.repository.deleteMany({
+      where: { id: { in: validRepoIds }, userId },
+    });
+
+    console.log(
+      `✅ [Repository Service] Successfully removed ${validRepoIds.length} repositories.`,
+    );
+
+    return {
+      message: `${validRepoIds.length} repositories successfully removed.`,
+    };
   },
 };
