@@ -19,3 +19,17 @@ export const fileSummarizationWorker = new Worker<FileSummarizationJobData>(
 fileSummarizationWorker.on("failed", (job, error) => {
   logError(error);
 });
+
+fileSummarizationWorker.on("ready", () =>
+  console.log("fileSummarizationWorker ready")
+);
+
+fileSummarizationWorker.on("active", (job) =>
+  console.log("fileSummarizationWorker active", job.id)
+);
+
+fileSummarizationWorker.on("error", (err) => {
+  console.log("fileSummarizationWorker error");
+
+  logError(err);
+});
